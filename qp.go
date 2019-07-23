@@ -12,6 +12,7 @@ import (
 var sla30m, _ = time.ParseDuration("30m")
 var sla5m, _ = time.ParseDuration("5m")
 
+// hold information about each conversation
 type Conversation struct {
 	id    string
 	vel   int64
@@ -75,6 +76,7 @@ type MsgQ struct {
 	queue Queue
 	in    chan *Conversation
 	out   chan *Conversation
+	updates chan string
 	done  chan string
 	index int
 }
@@ -84,27 +86,35 @@ func (mq *MsgQ) Receive() {
 	for c := range mq.in {
 		runes := []rune(c.id)
 		cid := string(runes[0:8])
-		fmt.Printf("\n\n @@@ mq.in <- [new conversation] %+v \n\n", cid)
+		fmt.Printf("\n\n >>> mq.in <- [new conversation] %+v \n\n", cid)
+		
 		heap.Push(&mq.queue, c)
+		mq.updates <- fmt.Sprintf("Conversation Added [%v]",cid)
 	}
 }
 
 func (mq *MsgQ) Release() {
 	//fmt.Printf("\n\n___ RELEASE ... waiting on mq.out <- from current queue of lenth := (%v) items\n\n", len(mq.queue))
 	for c := range mq.out {
-		fmt.Printf("\n\n @@@ mq.out [MESSAGE RECEIVED] <- [%v] #%v",c.index, c.score)
-		
+
+		runes := []rune(c.id)
+		cid := string(runes[0:8])
+		fmt.Printf("\n\n>>> mq.out <- Remove Conv <- [%v] [%v] ~%v\n\n", c.index, cid, c.score)
 		if c.index == 0 && len(mq.queue) == 1 {
-			//fmt.Println("\n\n --- index 0 points to ... ",mq.queue[c.index])
+			//fmt.Println("\n\n --- index 0 points to ... ", mq.queue[c.index])
 			mq.queue = nil
+		} else if c.index == 0 && len(mq.queue) > 1 {
+			//fmt.Println("\n\n --- index 0 points to ... ", mq.queue[c.index], len(mq.queue))
+			mq.queue = mq.queue[1:]
 		}
-		if len(mq.queue) > c.index +1 {
-			//fmt.Printf("\n\t\t >>> RELEASE: queue item at index %v \n\n--------\n\n",c.index)
+		if len(mq.queue) > c.index+1 {
+
 			mq.queue[c.index], mq.queue[len(mq.queue)-1] = mq.queue[len(mq.queue)-1], mq.queue[c.index]
-			mq.queue = mq.queue[:len(mq.queue)-1]  // Truncate slice.
+			mq.queue = mq.queue[:len(mq.queue)-1] // Truncate slice.
 			// heap.Init(&mq.queue)
 		}
-		
+		msg := fmt.Sprintf("Conversation Removed [%v]",cid)
+		mq.updates <- msg
 	}
 }
 
@@ -117,16 +127,15 @@ func (mq *MsgQ) Process() {
 	for _, c := range mq.queue {
 		c.tiq = (time.Duration(c.tiq) + (time.Minute * 5)) // add 5mins to each conversation's time in queue value
 		c.Score()
-		if c.score > 1000 {
-			mq.out <- c
-		}                                          //score them again
+		if c.score > 2000 {
+			mq.out <- c // remove conv by sending to the .out chan for removal
+		} 
 	}
 	sort.Sort(byScore(mq.queue)) // sort by score
 }
 
 type Batch struct {
 }
-
 
 func random(min, max int) int {
 
@@ -138,9 +147,10 @@ func PopulateQ(size int) *MsgQ {
 
 	incoming := make(chan *Conversation)
 	outgoing := make(chan *Conversation)
+	updates := make(chan string)
 	done := make(chan string, 1)
 
-	mq := &MsgQ{make(Queue, 0, size*2), incoming, outgoing, done, 0}
+	mq := &MsgQ{make(Queue, 0, size*2), incoming, outgoing, updates, done, 0}
 	// populate the queue with random conversations
 	for i := 0; i < size; i++ {
 		mins := fmt.Sprintf("%vm", random(1, 30))
@@ -159,12 +169,13 @@ func PopulateQ(size int) *MsgQ {
 	}
 	go mq.Receive()
 	go mq.Release()
-	// go func() {
-	// 	for c := range mq.in {
-	// 		fmt.Printf("\n\n *** mq.in <- [new conversation] %+v \n\n", c)
-	// 	}
-	// }()
-	//fmt.Println(mq.queue)
+	go func() {
+			for m:= range mq.updates {
+				fmt.Printf("\n! mq.update <- m '%v'\n\n", m)
+				//mq.Display()
+		}
+	}()
+
 	go mq.Monitor()
 	return mq
 }
@@ -178,19 +189,22 @@ func (mq *MsgQ) Monitor() {
 		// startTime.Add(time.Minute * 10)
 		startTime.Add(time.Duration(minsToAdd) * time.Minute)
 		//p("[monitor] vclock := ", vClock)
-		//p("...ticker := ", startTime.Add(time.Duration(minsToAdd)*time.Minute))
+		fmt.Printf("...clock tick...%v\n", startTime.Add(time.Duration(minsToAdd)*time.Minute))
 		mq.Process()
 		mq.Display()
-		//diff := vClock.Sub(startTime)
-		//p("...q runtime => ", diff, diff.Minutes())
 		minsToAdd = minsToAdd + 5
 		// if queue length is 0 then we are done!
 		if len(mq.queue) == 0 {
+			
 			mq.done <- `--QUEUE IS EMPTY--`
+			
 		} else {
-			fmt.Printf("--- STILL %v item(s) left in the queue!",len(mq.queue))
+			fmt.Printf("[%v] item(s) left in the queue!\n\n", len(mq.queue))
 		}
 	}
+	
+
+
 }
 
 func (mq *MsgQ) Display() {
@@ -208,27 +222,13 @@ func (mq *MsgQ) Display() {
 
 func (c *Conversation) Score() {
 	var cs int64
-	//p := fmt.Println
-	//pf := fmt.Printf
-	//pf("...Attempting to calculate Score for convId: %v with a velocity of %v with an SLA of %v (seconds) that has been in the queue waiting for %v (mins)\n\n", c.id, c.vel, c.sla.Seconds(), c.tiq)
 	now := time.Now()
 	tiq := now.Add(-c.tiq)
 	//tiq := now.Add(-waitingFor)
 	now_ms := now.Unix() * 1000
 	tiq_ms := tiq.Unix() * 1000
-	//p(now)
-	//p(now_ms)
-	//pf("now_ms %v %t \n\n", now_ms, now_ms)
-	//pf("tiq_ms %v %t \n\n", tiq_ms, tiq_ms)
-	//pf("c.vel %v %t \n\n", c.vel, c.vel)
-	//pf("c.sla.Seconds() %v %t \n\n", c.sla.Seconds(), c.sla)
-	//p(tiq)
-	//p(tiq_ms)
-	//pf("... Score Formula = (%v (ms) - %v (ms)) * %v / %v (sec) \n\n", now_ms, tiq_ms, c.vel, c.sla.Seconds())
-	//p("... ... now_ms - tiq_ms => ", (now_ms - tiq_ms))
-	//p("... ... (now_ms - tiq_ms) * c.vel => ", ((now_ms - tiq_ms) * int64(c.vel)))
 	cs = ((now_ms - tiq_ms) * int64(c.vel)) / int64(c.sla.Seconds())
-	//p(cs)
+
 	/*
 		CS = Conversation Score
 		Now = time in ms
@@ -242,9 +242,8 @@ func (c *Conversation) Score() {
 
 		CS = (Now - TIQ) * Velocity / SLA
 	*/
-	//p("=> SCORE = ", cs)
+
 	c.score = cs
-	//	return cs
 
 }
 
@@ -262,6 +261,7 @@ func generateConversationId() string {
 
 func main() {
 	p := fmt.Println
+	pf := fmt.Printf
 	rand.Seed(time.Now().Unix())
 	/*
 		c2 at vel 2 and wait 10m = 666
@@ -272,33 +272,6 @@ func main() {
 	newQ := PopulateQ(10)
 	heap.Init(&newQ.queue)
 
-	// ticker := time.NewTicker(2 * time.Second)
-	// startTime := time.Now().Local()
-	// var minsToAdd = 5
-	// To convert an integer number of units to a Duration, multiply:
-	// seconds := 10
-	// fmt.Print(time.Duration(seconds) * time.Second) // prints 10s
-	// go func() {
-	// 	for range ticker.C {
-	// 		vClock := startTime.Add(time.Duration(minsToAdd) * time.Minute)
-	// 		p("[monitor] vclock := ", vClock)
-	// 		p("...ticker := ", startTime.Add(time.Duration(minsToAdd)*time.Minute))
-	// 		newQ.Process()
-	// 		newQ.Display()
-	// 		diff := vClock.Sub(startTime)
-	// 		p("...q runtime => ", diff, diff.Minutes())
-	// 		minsToAdd = minsToAdd + 5
-	// 		if diff.Minutes() > 60 {
-	// 			// stop Q after > 60 mins elapsed time 
-	// 			// grab top conv and generate summary for .done channel to stop process
-	// 			x := newQ.queue.Pop()
-	// 			c := x.(*Conversation)
-	// 			summary := fmt.Sprintf("Queue has been running for 60 mins virtual time! ... done <- \n\n at the time of stopping the conv at the top was id:%v with score of %v and had been in the queue for %vm",c.id,c.score,c.tiq)
-	// 			newQ.done <- summary
-	// 		}
-	// 	}
-	// }()
-	//wait_for_1m, _ := time.ParseDuration("1m")
 	botConv := &Conversation{
 		id:    generateConversationId(),
 		vel:   2,
@@ -307,9 +280,8 @@ func main() {
 		score: 0,
 	}
 	time.Sleep(5 * time.Second)
-	p(">>> botConv vel 20 adding ... ", botConv.id)
+	pf("\n\n >>> newQ.in <- botConv vel 20 adding [%v]... ", botConv.id)
 	newQ.in <- botConv
-	//heap.Push(&newQ.queue, botConv)
 
 	go func() {
 		// loop 3 times, create new conversation and wait a random 1-10 sec interval before pushing it down the "in" channel of the Q
