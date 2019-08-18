@@ -24,14 +24,14 @@ type Conversation struct {
 
 type Items []*Conversation
 
-func (it Items) Len() int { return len(it) }
+func (items Items) Len() int { return len(items) }
 
-func (it Items) Less(i, j int) bool {
-	return it[i].score < it[j].score
+func (items Items) Less(i, j int) bool {
+	return items[i].score < items[j].score
 }
 
-func (it *Items) Swap(i, j int) {
-	a := *it
+func (items *Items) Swap(i, j int) {
+	a := *items
 	a[i], a[j] = a[j], a[i]
 	a[i].index = i
 	a[j].index = j
@@ -52,21 +52,21 @@ func (s byScore) Less(i, j int) bool {
 	return s[i].score > s[j].score
 }
 
-func (i *Items) Push(x interface{}) {
-	a := *i // temp var from the Items
+func (items *Items) Push(x interface{}) {
+	a := *items // temp var from the Items
 	//p := fmt.Println
 	n := len(a)
 	//p(n)
 	c := x.(*Conversation)
 	a = a[0 : n+1] // assign new slice +1 bigger
 	a[n] = c       // put new Conversation at back of Items
-	*i = a         // assign new Items back to the pointer ref *i
+	*items = a     // assign new Items back to the pointer ref *i
 }
 
-func (i *Items) Pop() interface{} {
-	a := *i
-	*i = a[0 : len(a)-1] // make Items -1 smaller
-	c := a[0]            // FILO - get one at the front as we order by SCORE and take from the top of the Items when needed
+func (items *Items) Pop() interface{} {
+	a := *items
+	*items = a[0 : len(a)-1] // make Items -1 smaller
+	c := a[0]                // FILO - get one at the front as we order by SCORE and take from the top of the Items when needed
 	// c := a[len(a)-1] // FIFO
 	fmt.Println(">>> POP c: ", c.id)
 	return c
